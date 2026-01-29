@@ -1,0 +1,140 @@
+#include <Servo.h>
+
+// ===== PIN DEFINITIONS =====
+const int rowPins[4] = {PA0, PA1, PA2, PA3};
+const int colPins[4] = {PA8, PA9, PA10, PA11};
+const int greenLedPin = PB0;
+const int redLedPin = PB1;
+const int buzzerPin = PB10;
+const int servoPin = PB9;
+const int accessGrantedPin = PB11; // Input signal from Arduino D4
+
+// ===== KEYPAD MAPPING =====
+char keymap[4][4] = {
+  {'1', '2', '3', '4'},
+  {'5', '6', '7', '8'},
+  {'9', 'A', 'B', 'C'},
+  {'D', 'E', 'F', 'G'}
+};
+
+// ===== PIN CODE SETTINGS =====
+const char correctPin[4] = {'1', '2', '3', '4'};
+char enteredPin[4];
+int keyIndex = 0;
+
+Servo myservo;
+
+// ===== SECURITY LOCKOUT =====
+int incorrectAttempts = 0;
+unsigned long lockoutStartTime = 0;
+const unsigned long lockoutDuration = 60000UL;
+bool lockedOut = false;
+
+// ===== HELPER FUNCTIONS =====
+void resetLeds() {
+  digitalWrite(greenLedPin, LOW);
+  digitalWrite(redLedPin, LOW);
+}
+
+char getKey() {
+  for (int i = 0; i < 4; i++) digitalWrite(rowPins[i], HIGH);
+  for (int r = 0; r < 4; r++) {
+    digitalWrite(rowPins[r], LOW);
+    delay(5);
+    for (int c = 0; c < 4; c++) {
+      if (digitalRead(colPins[c]) == LOW) {
+        while (digitalRead(colPins[c]) == LOW) delay(1);
+        digitalWrite(rowPins[r], HIGH);
+        return keymap[r][c];
+      }
+    }
+    digitalWrite(rowPins[r], HIGH);
+  }
+  return '\0';
+}
+
+// ===== SETUP =====
+void setup() {
+  Serial.begin(115200);
+  for (int i = 0; i < 4; i++) {
+    pinMode(rowPins[i], OUTPUT);
+    digitalWrite(rowPins[i], HIGH);
+    pinMode(colPins[i], INPUT_PULLUP);
+  }
+
+  pinMode(greenLedPin, OUTPUT);
+  pinMode(redLedPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(accessGrantedPin, INPUT); // No pull-up/down since external signal
+
+  myservo.attach(servoPin);
+  myservo.write(0);
+  resetLeds();
+
+  Serial.println("STM32 Keypad + RFID Door Lock System Ready");
+}
+
+// ===== MAIN LOOP =====
+void loop() {
+  bool accessGranted = (digitalRead(accessGrantedPin) == HIGH);
+
+  // Handle lockout
+  if (lockedOut) {
+    digitalWrite(redLedPin, HIGH);
+    myservo.write(0);
+    if (millis() - lockoutStartTime >= lockoutDuration) {
+      lockedOut = false;
+      incorrectAttempts = 0;
+      resetLeds();
+    }
+    return;
+  }
+
+  char key = getKey();
+  if (key != '\0') {
+    if (keyIndex < 4)
+      enteredPin[keyIndex++] = key;
+
+    Serial.print("Key Pressed: ");
+    Serial.println(key);
+
+    if (keyIndex == 4) {
+      bool pinMatch = true;
+      for (int i = 0; i < 4; i++) {
+        if (enteredPin[i] != correctPin[i]) {
+          pinMatch = false;
+          break;
+        }
+      }
+
+      Serial.print("RFID = ");
+      Serial.print(accessGranted ? "Granted" : "Denied");
+      Serial.print(" | PIN = ");
+      Serial.println(pinMatch ? "Correct" : "Wrong");
+
+      // BOTH RFID and PIN must be correct
+      if (pinMatch && accessGranted) {
+        Serial.println("✅ Access Granted — Unlocking Door");
+        digitalWrite(greenLedPin, HIGH);
+        tone(buzzerPin, 1000, 200);
+        myservo.write(90);
+        delay(3000);
+      } else {
+        Serial.println("❌ Access Denied — Wrong RFID or PIN");
+        digitalWrite(redLedPin, HIGH);
+        tone(buzzerPin, 400, 800);
+        incorrectAttempts++;
+        if (incorrectAttempts >= 3) {
+          lockedOut = true;
+          lockoutStartTime = millis();
+        }
+      }
+
+      // Reset
+      myservo.write(0);
+      delay(1000);
+      resetLeds();
+      keyIndex = 0;
+    }
+  }
+}
